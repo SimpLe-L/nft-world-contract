@@ -7,7 +7,6 @@ import {ERC20Capped} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20C
 
 contract SimpleToken is ERC20, ERC20Capped, Ownable {
     event MintToken(uint256 indexed amount);
-
     event BurnToken(uint256 indexed amount);
 
     constructor(
@@ -19,10 +18,12 @@ contract SimpleToken is ERC20, ERC20Capped, Ownable {
         _mint(to, amount);
         emit MintToken(amount);
     }
-    function burn(uint256 amount) public onlyOwner {
+
+    function burn(uint256 amount) public {
         _burn(msg.sender, amount);
         emit BurnToken(amount);
     }
+
     function _update(
         address from,
         address to,

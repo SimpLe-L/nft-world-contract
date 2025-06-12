@@ -15,8 +15,6 @@ contract SMPFaucet is Ownable {
 
     IERC20 public token;
 
-    address public tokenAddress;
-
     uint256 public claimTime;
 
     uint256 immutable claimAmount;
@@ -29,7 +27,6 @@ contract SMPFaucet is Ownable {
         uint256 _claimAmount,
         address _owner
     ) Ownable(_owner) {
-        tokenAddress = _tokenAddress;
         claimTime = _claimTime;
         claimAmount = _claimAmount;
         token = IERC20(_tokenAddress);
@@ -55,7 +52,7 @@ contract SMPFaucet is Ownable {
         token.safeTransferFrom(msg.sender, address(this), _amount);
     }
 
-    function gettimeMapping(address _addr) external view returns (uint256) {
+    function getTimeMapping(address _addr) external view returns (uint256) {
         return timeMapping[_addr];
     }
 }
