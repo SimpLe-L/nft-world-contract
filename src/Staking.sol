@@ -5,54 +5,73 @@ import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC721Holder} from "@openzeppelin/contracts/token/ERC721/utils/ERC721Holder.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-contract NFTStaking is ERC721Holder, ReentrancyGuard {
+contract NFTStaking is ERC721Holder, ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
-    struct RewardPool {
-        uint256 totalReward; // 奖励总量
-        uint256 claimed; // 已领取数量
-        uint256 unlockStart; // 解锁起始时间戳
+    struct StakeInfo {
+        address staker;
+        uint256 timestamp;
     }
 
-    IERC721 public immutable nftToken; // 质押的NFT合约
-    IERC20 public immutable rewardToken; // 奖励代币合约
-    uint256 public rewardRatePerSecond; // 每秒奖励率（每NFT）
+    struct RewardPool {
+        uint256 totalReward;
+        uint256 claimed;
+        uint256 unlockStart;
+    }
 
-    mapping(address => mapping(uint256 => uint256)) private _stakeTimestamps; // 质押时间记录
-    mapping(address => RewardPool[]) private _rewardPools; // 用户奖励池
+    IERC721 public immutable nftToken;
+    IERC20 public immutable rewardToken;
+    uint256 public rewardRatePerSecond;
 
-    constructor(address _nft, address _rewardToken, uint256 _dailyRewardRate) {
+    mapping(uint256 => StakeInfo) public stakeInfos;
+    mapping(address => RewardPool[]) private _rewardPools;
+
+    uint256 public constant VESTING_DURATION = 30 days;
+
+    constructor(
+        address _nft,
+        address _rewardToken,
+        uint256 _dailyRewardRate
+    ) Ownable(msg.sender) {
         nftToken = IERC721(_nft);
         rewardToken = IERC20(_rewardToken);
-        rewardRatePerSecond = _dailyRewardRate / 86400; // 将日奖励率转换为每秒
+        rewardRatePerSecond = _dailyRewardRate / 86400;
     }
 
-    // 质押NFT
-    function stake(uint256 tokenId) external nonReentrant {
-        require(
-            _stakeTimestamps[msg.sender][tokenId] == 0,
-            "Token already staked"
-        );
+    // stakiing
+
+    function stake(uint256 tokenId) public nonReentrant {
+        require(stakeInfos[tokenId].staker == address(0), "Already staked");
+
         nftToken.safeTransferFrom(msg.sender, address(this), tokenId);
-        _stakeTimestamps[msg.sender][tokenId] = block.timestamp;
+        stakeInfos[tokenId] = StakeInfo({
+            staker: msg.sender,
+            timestamp: block.timestamp
+        });
     }
 
-    // 取消质押并计算奖励
-    function unstake(uint256 tokenId) external nonReentrant {
-        uint256 stakeTime = _stakeTimestamps[msg.sender][tokenId];
-        require(stakeTime != 0, "Token not staked");
+    function stakeBatch(uint256[] calldata tokenIds) external {
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            stake(tokenIds[i]);
+        }
+    }
 
-        // 计算质押时长和奖励
-        uint256 stakedDuration = block.timestamp - stakeTime;
-        uint256 reward = stakedDuration * rewardRatePerSecond;
+    function unstake(uint256 tokenId) public nonReentrant {
+        StakeInfo memory info = stakeInfos[tokenId];
+        require(info.staker == msg.sender, "Not staker");
 
-        // 转移NFT回用户
+        uint256 stakedTime = block.timestamp - info.timestamp;
+        uint256 reward = stakedTime * rewardRatePerSecond;
+
+        delete stakeInfos[tokenId];
+
+        // transfer NFT
         nftToken.safeTransferFrom(address(this), msg.sender, tokenId);
-        delete _stakeTimestamps[msg.sender][tokenId];
 
-        // 创建新的奖励池
+        // reward pool
         _rewardPools[msg.sender].push(
             RewardPool({
                 totalReward: reward,
@@ -62,58 +81,97 @@ contract NFTStaking is ERC721Holder, ReentrancyGuard {
         );
     }
 
-    // 领取可解锁的奖励
-    function claimRewards() external nonReentrant {
-        uint256 totalClaimable;
-        RewardPool[] storage pools = _rewardPools[msg.sender];
-
-        for (uint256 i = 0; i < pools.length; i++) {
-            RewardPool storage pool = pools[i];
-            if (pool.unlockStart == 0 || pool.claimed >= pool.totalReward)
-                continue;
-
-            uint256 elapsed = block.timestamp - pool.unlockStart;
-            uint256 vestingPeriod = 30 days;
-
-            if (elapsed >= vestingPeriod) {
-                totalClaimable += pool.totalReward - pool.claimed;
-                pool.claimed = pool.totalReward;
-            } else {
-                uint256 vestedAmount = (pool.totalReward * elapsed) /
-                    vestingPeriod;
-                uint256 claimable = vestedAmount - pool.claimed;
-                if (claimable > 0) {
-                    totalClaimable += claimable;
-                    pool.claimed += claimable;
-                }
-            }
+    function unstakeBatch(uint256[] calldata tokenIds) external {
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            unstake(tokenIds[i]);
         }
-
-        require(totalClaimable > 0, "No claimable rewards");
-        rewardToken.safeTransfer(msg.sender, totalClaimable);
     }
 
-    // 查询可领取奖励（视图函数）
-    function getClaimableRewards(address user) external view returns (uint256) {
-        uint256 totalClaimable;
+    // claim rewards
+
+    function claimRewards() external nonReentrant {
+        uint256 claimable = _calculateClaimable(msg.sender);
+        require(claimable > 0, "Nothing to claim");
+
+        uint256 available = rewardToken.balanceOf(address(this));
+        require(available >= claimable, "Insufficient rewards in contract");
+
+        rewardToken.safeTransfer(msg.sender, claimable);
+    }
+
+    function _calculateClaimable(
+        address user
+    ) internal returns (uint256 total) {
         RewardPool[] storage pools = _rewardPools[user];
 
         for (uint256 i = 0; i < pools.length; i++) {
             RewardPool storage pool = pools[i];
-            if (pool.unlockStart == 0 || pool.claimed >= pool.totalReward)
-                continue;
+            if (pool.claimed >= pool.totalReward) continue;
 
             uint256 elapsed = block.timestamp - pool.unlockStart;
-            uint256 vestingPeriod = 30 days;
+            uint256 vested = elapsed >= VESTING_DURATION
+                ? pool.totalReward
+                : (pool.totalReward * elapsed) / VESTING_DURATION;
 
-            if (elapsed >= vestingPeriod) {
-                totalClaimable += pool.totalReward - pool.claimed;
-            } else {
-                uint256 vestedAmount = (pool.totalReward * elapsed) /
-                    vestingPeriod;
-                totalClaimable += vestedAmount - pool.claimed;
+            uint256 claimable = vested - pool.claimed;
+            if (claimable > 0) {
+                pool.claimed += claimable;
+                total += claimable;
             }
         }
-        return totalClaimable;
+    }
+
+    function getClaimableRewards(
+        address user
+    ) external view returns (uint256 total) {
+        RewardPool[] storage pools = _rewardPools[user];
+        for (uint256 i = 0; i < pools.length; i++) {
+            RewardPool storage pool = pools[i];
+            if (pool.claimed >= pool.totalReward) continue;
+
+            uint256 elapsed = block.timestamp - pool.unlockStart;
+            uint256 vested = elapsed >= VESTING_DURATION
+                ? pool.totalReward
+                : (pool.totalReward * elapsed) / VESTING_DURATION;
+
+            total += vested - pool.claimed;
+        }
+    }
+
+    function getUserRewardPools(
+        address user
+    ) external view returns (RewardPool[] memory) {
+        return _rewardPools[user];
+    }
+
+    function getUserStakedTokens(
+        address user,
+        uint256 start,
+        uint256 end
+    ) external view returns (uint256[] memory tokenIds) {
+        uint256 count = 0;
+        uint256[] memory tmp = new uint256[](end - start + 1);
+        for (uint256 i = start; i <= end; i++) {
+            if (stakeInfos[i].staker == user) {
+                tmp[count++] = i;
+            }
+        }
+
+        tokenIds = new uint256[](count);
+        for (uint256 i = 0; i < count; i++) {
+            tokenIds[i] = tmp[i];
+        }
+    }
+
+    // manager
+    function setDailyRewardRate(uint256 dailyRate) external onlyOwner {
+        rewardRatePerSecond = dailyRate / 86400;
+    }
+
+    function emergencyWithdrawERC20(
+        address to,
+        uint256 amount
+    ) external onlyOwner {
+        rewardToken.safeTransfer(to, amount);
     }
 }

@@ -9,7 +9,7 @@ contract SimpleAirdrop {
 
     event TokenClaimed(address account, uint256 amount);
 
-    error InvaildAmount();
+    error InvalidAmount();
     error TokenAlreadyClaimed();
     error InvalidProof();
 
@@ -29,16 +29,14 @@ contract SimpleAirdrop {
         bytes32[] calldata merkleProof
     ) external {
         if (amount == 0 || simpleToken.balanceOf(address(this)) < amount) {
-            revert InvaildAmount();
+            revert InvalidAmount();
         }
 
         if (hasClaimed[account]) {
             revert TokenAlreadyClaimed();
         }
 
-        bytes32 leaf = keccak256(
-            bytes.concat(keccak256(abi.encode(account, amount)))
-        );
+        bytes32 leaf = keccak256(abi.encodePacked(account, amount));
 
         if (!MerkleProof.verify(merkleProof, merkleRoot, leaf)) {
             revert InvalidProof();

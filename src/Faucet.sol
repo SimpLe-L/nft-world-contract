@@ -15,7 +15,7 @@ contract SMPFaucet is Ownable {
 
     IERC20 public token;
 
-    uint256 public claimTime;
+    uint256 immutable claimTime;
 
     uint256 immutable claimAmount;
 
@@ -27,6 +27,10 @@ contract SMPFaucet is Ownable {
         uint256 _claimAmount,
         address _owner
     ) Ownable(_owner) {
+        require(_tokenAddress != address(0), "Invalid token address");
+        require(_claimTime > 0, "Claim time must be > 0");
+        require(_claimAmount > 0, "Claim amount must be > 0");
+
         claimTime = _claimTime;
         claimAmount = _claimAmount;
         token = IERC20(_tokenAddress);
@@ -41,15 +45,19 @@ contract SMPFaucet is Ownable {
             revert FaucetTokenNotEnough();
         }
 
-        token.safeTransfer(msg.sender, claimAmount);
-
         timeMapping[msg.sender] = block.timestamp;
+
+        token.safeTransfer(msg.sender, claimAmount);
 
         emit TokenClaim(msg.sender, claimAmount);
     }
 
     function deposit(uint256 _amount) external onlyOwner {
         token.safeTransferFrom(msg.sender, address(this), _amount);
+    }
+
+    function withdraw(address _to, uint256 _amount) external onlyOwner {
+        token.safeTransfer(_to, _amount);
     }
 
     function getTimeMapping(address _addr) external view returns (uint256) {
